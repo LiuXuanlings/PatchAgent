@@ -6,7 +6,7 @@
 ![Platform](https://img.shields.io/badge/platform-linux-lightgrey.svg)
 
 > [!NOTE]  
-> The original research repository is located at [osf.io/8k2ac](https://osf.io/8k2ac). 
+> The original research repository is located at [osf.io/8k2ac](https://osf.io/8k2ac) and [PatchAgent-Artifact](https://github.com/cla7aye15I4nd/patchagent-artifact). 
 > This repository is a production-focused fork dedicated to real-world bug fixing.
 
 ## 📣 News
