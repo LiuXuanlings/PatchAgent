@@ -11,6 +11,7 @@
 
 ## 📣 News
 
+- 🎉 [2025.11] PatchAgent win 🥈 Runner-up in Technical Impact Award of [CSAW Applied Research Competition (ARC) 2025](https://mlab.cyber.nyu.edu/csaw/finalists/#winners-2025)!
 - 🎉 [2025.10] PatchAgent is accepted at [CSAW Applied Research Competition (ARC) 2025](https://mlab.cyber.nyu.edu/csaw/finalists/#finalists)!
 - 🎉 [2025.08] PatchAgent is presented at [USENIX Security 2025](https://www.usenix.org/conference/usenixsecurity25/presentation/yu-zheng)!
 
