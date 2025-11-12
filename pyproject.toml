@@ -9,16 +9,16 @@ authors = [
     {name = "Zheng Yu", email = "dataisland@outlook.com"}
 ]
 dependencies = [
-    "anthropic>=0.55.0",
+    "anthropic~=0.55.0",
     "clang==16.0.1",
-    "colorama>=0.4.6",
-    "GitPython>=3.1.44",
-    "langchain-core>=0.3.39",
-    "langchain-openai>=0.3.7",
-    "langchain>=0.3.19",
-    "pexpect>=4.9.0",
-    "tree-sitter-java>=0.23.5",
-    "tree-sitter>=0.24.0",
+    "colorama~=0.4.6",
+    "GitPython~=3.1.44",
+    "langchain-core~=0.3.39",
+    "langchain-openai~=0.3.7",
+    "langchain~=0.3.19",
+    "pexpect~=4.9.0",
+    "tree-sitter-java~=0.23.5",
+    "tree-sitter~=0.24.0",
 ]
 
 [project.optional-dependencies]
