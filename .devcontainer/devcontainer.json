@@ -1,12 +1,11 @@
 {
     "name": "patchagent",
-    "build": {
-        "dockerfile": "../Dockerfile",
-        "context": ".."
-    },
+    "image": "liuxuanlings/my-patchagent:latest",
     "runArgs": [
         "--privileged",
-        "--network=host"
+        "--network=host",
+        // 让容器启动时加载 .env
+        "--env-file", ".env"
     ],
     "postCreateCommand": "git config --global --add safe.directory '*' && pre-commit install",
     "mounts": [

@@ -8,6 +8,7 @@ from typing import List, Optional
 
 import pexpect
 import yaml
+import subprocess
 
 from patchagent.builder import Builder, PoC
 from patchagent.builder.utils import (
@@ -55,6 +56,7 @@ class OSSFuzzBuilder(Builder):
         workspace: Optional[Path] = None,
         clean_up: bool = True,
         replay_poc_timeout: int = 360,
+        docker_registry: Optional[str] = None
     ):
         super().__init__(project, source_path, workspace, clean_up)
         self.project = project
@@ -62,12 +64,15 @@ class OSSFuzzBuilder(Builder):
 
         self.sanitizers = sanitizers
         self.replay_poc_timeout = replay_poc_timeout
+        self.docker_registry = docker_registry
 
     @cached_property
     def fuzz_tooling_path(self) -> Path:
         target_path = self.workspace / "immutable" / self.org_fuzz_tooling_path.name
         if not target_path.is_dir():
-            shutil.copytree(self.org_fuzz_tooling_path, target_path, symlinks=True)
+            # shutil.copytree(self.org_fuzz_tooling_path, target_path, symlinks=True)
+            target_path.parent.mkdir(parents=True, exist_ok=True)
+            subprocess.run(["cp", "-r", str(self.org_fuzz_tooling_path), str(target_path)], check=True)
 
         return target_path
 
@@ -77,7 +82,44 @@ class OSSFuzzBuilder(Builder):
     def build_finish_indicator(self, sanitizer: Sanitizer, patch: str) -> Path:
         return self.workspace / self.hash_patch(sanitizer, patch) / ".build"
 
+    def _image_exists(self, image_name: str) -> bool:
+        try:
+            subprocess.run(
+                ["docker", "image", "inspect", image_name],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=True
+            )
+            return True
+        except subprocess.CalledProcessError:
+            return False
+
     def _build_image(self, fuzz_tooling_path: Path, tries: int = 3) -> None:
+        target_oss_image = f"gcr.io/oss-fuzz/{self.project}"
+        
+        if self.docker_registry:
+            remote_image = f"{self.docker_registry}/{self.project}:latest"
+            if self._image_exists(remote_image):
+                logger.info(f"[🐳] Found local image: {remote_image}. Re-tagging...")
+            else:
+                logger.info(f"[⬇️] Pulling image from hub: {remote_image}...")
+                try:
+                    subprocess.run(["docker", "pull", remote_image], check=True)
+                except subprocess.CalledProcessError:
+                    logger.warning(f"[⚠️] Pull failed. Falling back to local build.")
+                    self._build_image_locally(fuzz_tooling_path, tries)
+                    return
+
+            try:
+                subprocess.run(["docker", "tag", remote_image, target_oss_image], check=True)
+                return 
+            except subprocess.CalledProcessError as e:
+                logger.error(f"[❌] Failed to tag image: {e}")
+                raise DockerUnavailableError(str(e))
+
+        self._build_image_locally(fuzz_tooling_path, tries)
+
+    def _build_image_locally(self, fuzz_tooling_path: Path, tries: int = 3) -> None:
         for _ in range(tries):
             process = subprocess.Popen(
                 ["infra/helper.py", "build_image", "--pull", self.project],
@@ -102,8 +144,11 @@ class OSSFuzzBuilder(Builder):
         fuzz_tooling_path = workspace / self.org_fuzz_tooling_path.name
 
         shutil.rmtree(workspace, ignore_errors=True)
-        shutil.copytree(self.source_path, source_path, symlinks=True)
-        shutil.copytree(self.fuzz_tooling_path, fuzz_tooling_path, symlinks=True)
+        workspace.mkdir(parents=True, exist_ok=True)
+        # shutil.copytree(self.source_path, source_path, symlinks=True)
+        subprocess.run(["cp", "-r", str(self.source_path), str(source_path)], check=True)
+        # shutil.copytree(self.fuzz_tooling_path, fuzz_tooling_path, symlinks=True)
+        subprocess.run(["cp", "-r", str(self.fuzz_tooling_path), str(fuzz_tooling_path)], check=True)
 
         safe_subprocess_run(["patch", "-p1"], source_path, input=patch.encode())
 
@@ -221,13 +266,17 @@ class OSSFuzzBuilder(Builder):
             shutil.rmtree(clangd_workdir, ignore_errors=True)
 
             os.makedirs(clangd_workdir, exist_ok=True)
-            shutil.copytree(self.source_path, clangd_source, symlinks=True)
-            shutil.copytree(self.fuzz_tooling_path, clangd_fuzz_tooling, symlinks=True)
+            # shutil.copytree(self.source_path, clangd_source, symlinks=True)
+            subprocess.run(["cp", "-r", str(self.source_path), str(clangd_source)], check=True)
+            # shutil.copytree(self.fuzz_tooling_path, clangd_fuzz_tooling, symlinks=True)
+            subprocess.run(["cp", "-r", str(self.fuzz_tooling_path), str(clangd_fuzz_tooling)], check=True)
 
             logger.info("[🔋] Generating compile_commands.json")
             self._build_image(clangd_fuzz_tooling)
 
-            shutil.copytree(bear_path(), clangd_source / ".bear", symlinks=True)
+            # 使用系统 cp 命令绕过 macOS Docker 挂载卷的符号链接解析问题
+            # shutil.copytree(bear_path(), clangd_source / ".bear", symlinks=True) 
+            subprocess.run(["cp", "-r", str(bear_path()), str(clangd_source / ".bear")], check=True)
 
             shell = pexpect.spawn(
                 "python",
@@ -269,7 +318,8 @@ class OSSFuzzBuilder(Builder):
     def construct_c_language_server(self) -> HybridCServer:
         ctags_source = self.workspace / "ctags"
         if not ctags_source.is_dir():
-            shutil.copytree(self.source_path, ctags_source, symlinks=True)
+            # shutil.copytree(self.source_path, ctags_source, symlinks=True)
+            subprocess.run(["cp", "-r", str(self.source_path), str(ctags_source)], check=True)
 
         clangd_source = self._build_clangd_compile_commands()
         return HybridCServer(ctags_source, clangd_source)

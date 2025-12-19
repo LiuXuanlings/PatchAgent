@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Optional
 
 from git import Repo
+import subprocess
 
 from patchagent.builder.utils import BuilderProcessError, safe_subprocess_run
 from patchagent.lang import Lang
@@ -37,7 +38,9 @@ class Builder:
     def source_path(self) -> Path:
         target_path = self.workspace / "immutable" / self.org_source_path.name
         if not target_path.is_dir():
-            shutil.copytree(self.org_source_path, target_path, symlinks=True)
+            # shutil.copytree(self.org_source_path, target_path, symlinks=True)
+            target_path.parent.mkdir(parents=True, exist_ok=True)
+            subprocess.run(["cp", "-r", str(self.org_source_path), str(target_path)], check=True)
 
         return target_path
 
@@ -45,7 +48,9 @@ class Builder:
     def source_repo(self) -> Repo:
         target_path = self.workspace / "git" / self.org_source_path.name
         if not target_path.is_dir():
-            shutil.copytree(self.source_path, target_path, symlinks=True)
+            # shutil.copytree(self.source_path, target_path, symlinks=True)
+            target_path.parent.mkdir(parents=True, exist_ok=True)
+            subprocess.run(["cp", "-r", str(self.source_path), str(target_path)], check=True)
 
         if (target_path / ".git").is_dir():
             shutil.rmtree(target_path / ".git")
