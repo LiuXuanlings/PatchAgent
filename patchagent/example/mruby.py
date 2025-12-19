@@ -52,5 +52,9 @@ if __name__ == "__main__":
         patchtask.initialize()
         print(f"Patch: {patchtask.repair(agent_generator())}")
 
-# set -a; source .env; set +a;
+
+# 首次运行时拉取所有基础镜像
+# python pull_all_oss_fuzz_base_images.py
+# 执行后会拉取所有官方基础镜像，和运行 `python infra/helper.py pull_images` 效果一致
+
 # python -m patchagent.example.mruby
