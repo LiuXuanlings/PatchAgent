@@ -1,4 +1,6 @@
+import json
 import random
+import re
 from typing import Any
 
 from langchain_classic.agents import AgentExecutor
@@ -20,6 +22,7 @@ from patchagent.agent.clike.proxy.default import (
     create_locate_tool,
     create_validate_tool,
     create_viewcode_tool,
+    create_debugger_tool,
 )
 from patchagent.agent.utils import construct_chat_llm
 from patchagent.context import Context
@@ -58,6 +61,7 @@ class CommonCLikeAgent(BaseAgent):
             create_viewcode_tool(self.task, auto_hint=self.auto_hint),
             create_validate_tool(self.task, auto_hint=self.auto_hint),
             create_locate_tool(self.task, auto_hint=self.auto_hint),
+            create_debugger_tool(self.task, self.llm),
         ]
         oai_tools = [convert_to_openai_tool(tool) for tool in lc_tools]
 

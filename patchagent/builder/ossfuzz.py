@@ -9,6 +9,7 @@ from typing import List, Optional
 import pexpect
 import yaml
 import subprocess
+import re
 
 from patchagent.builder import Builder, PoC
 from patchagent.builder.utils import (
@@ -24,6 +25,8 @@ from patchagent.lsp.language import LanguageServer
 from patchagent.parser import Sanitizer, SanitizerReport, parse_sanitizer_report
 from patchagent.parser.unknown import UnknownSanitizerReport
 from patchagent.utils import bear_path
+
+from patchagent.parser.utils import remove_ansi_escape # 清理颜色
 
 
 class OSSFuzzPoC(PoC):
@@ -134,6 +137,46 @@ class OSSFuzzBuilder(Builder):
 
         raise DockerUnavailableError(stderr.decode(errors="ignore"))
 
+    def _inject_debug_flags(self, build_sh_path: Path) -> None:
+        """
+        向 build.sh 注入调试友好的编译选项 (-O0 -g3)。
+        策略：识别 Shebang 行，并在其后立即插入环境变量设置。
+        """
+        if not build_sh_path.exists():
+            logger.warning(f"[⚠️] build.sh not found at {build_sh_path}, skipping injection.")
+            return
+
+        try:
+            content = build_sh_path.read_text(errors="ignore")
+            lines = content.splitlines()
+            
+            # 定义我们要注入的 flag
+            # -O0: 关闭优化，防止变量被优化掉 (value optimized out)
+            # -g3: 包含宏定义信息，允许 GDB 使用 print MACRO
+            injection_lines = [
+                'export CFLAGS="$CFLAGS -O0 -g3"',
+                'export CXXFLAGS="$CXXFLAGS -O0 -g3"'
+            ]
+
+            new_lines = []
+            
+            # 判断第一行是否是 Shebang (#!/bin/bash ...)
+            if lines and lines[0].startswith("#!"):
+                new_lines.append(lines[0])       # 保留 Shebang
+                new_lines.extend(injection_lines) # 插入 flag
+                new_lines.extend(lines[1:])      # 追加剩余内容
+            else:
+                # 如果没有 Shebang，直接插在最前面
+                new_lines.extend(injection_lines)
+                new_lines.extend(lines)
+
+            # 写回文件
+            build_sh_path.write_text("\n".join(new_lines) + "\n")
+            logger.info(f"[💉] Injected debug flags (-O0 -g3) into {build_sh_path.name}")
+            
+        except Exception as e:
+            logger.error(f"[❌] Failed to inject debug flags: {e}")
+
     def _build(self, sanitizer: Sanitizer, patch: str = "") -> None:
         if self.build_finish_indicator(sanitizer, patch).is_file():
             return
@@ -149,6 +192,12 @@ class OSSFuzzBuilder(Builder):
         subprocess.run(["cp", "-r", str(self.source_path), str(source_path)], check=True)
         # shutil.copytree(self.fuzz_tooling_path, fuzz_tooling_path, symlinks=True)
         subprocess.run(["cp", "-r", str(self.fuzz_tooling_path), str(fuzz_tooling_path)], check=True)
+
+        # 注入 Flag
+        build_sh_path = fuzz_tooling_path / "projects" / self.project / "build.sh"
+        self._inject_debug_flags(build_sh_path)
+
+        safe_subprocess_run(["patch", "-p1"], source_path, input=patch.encode())
 
         safe_subprocess_run(["patch", "-p1"], source_path, input=patch.encode())
 
@@ -184,6 +233,80 @@ class OSSFuzzBuilder(Builder):
         for sanitizer in self.sanitizers:
             self._build(sanitizer, patch)
 
+    def _extract_repro_command(self, content: str) -> str:
+        """从 OSS-Fuzz 日志中精确提取复现命令的关键组件"""
+        clean_content = remove_ansi_escape(content)
+
+        # OSS-Fuzz 容器路径约定说明 (Hardcoded Paths):
+        # 1. 目标二进制 (Binary): 总是位于 /out/ 目录下 (如 /out/target_binary)。
+        # 2. 测试用例 (PoC): reproduce 模式下，helper.py 会将输入文件固定挂载为 /testcase。
+        # 3. 这里的提取逻辑依赖于 helper.py 的标准输出格式："/out/binary [args...] /testcase [args...]"
+
+        # 正则匹配逻辑:
+        # 1. ^(/out/[^\s]+): 捕获二进制路径 (Group 1)，直到遇到第一个空格
+        # 2. \s+(.*)$: 捕获后续所有参数 (Group 2)
+        match = re.search(r"^(/out/[^\s]+)\s+(.*)$", clean_content, re.MULTILINE)
+
+        if match:
+            binary_path = match.group(1)
+            full_args_str = match.group(2)
+            args_tokens = full_args_str.split()
+
+            # 查找 /testcase (PoC文件)
+            poc_path = next((token for token in args_tokens if token == "/testcase"), None)
+
+            # 过滤 flags/options，仅保留部分触发漏洞相关的 (如 -rss_limit_mb=2560)
+            other_flags = [token for token in args_tokens if token != "/testcase"]
+            flags_str = " ".join(other_flags)
+
+            kept_args = []
+            for token in args_tokens:
+                # 保留 PoC (通常是 /testcase)
+                if token == "/testcase":
+                    continue # 后面单独拼装
+                
+                # 保留非 Flag 参数 (极其罕见，以防万一)
+                if not token.startswith("-"):
+                    kept_args.append(token)
+                    continue
+
+                # [保留] 内存限制：防止 OOM 类型的 Bug 无法复现
+                if token.startswith("-rss_limit_mb="):
+                    kept_args.append(token)
+                    continue
+                
+                # [删除] 超时：调试时单步执行耗时很长，保留 timeout 会导致进程被 kill
+                if token.startswith("-timeout="):
+                    continue
+
+                # [删除] 字典/配置：文件在 Agent 容器中不存在，会导致启动失败
+                if token.startswith("-dict=") or token.startswith("-conf=") or token.startswith("-data_flow_trace="):
+                    continue
+
+                # [删除] 运行控制：调试只需要跑一次
+                if token.startswith("-runs=") or token.startswith("-jobs=") or token.startswith("-workers="):
+                    continue
+                
+                # [删除] 其他杂项
+                if token.startswith("-artifact_prefix=") or token.startswith("-print_final_stats"):
+                    continue
+
+            # 3. 组装最终命令
+            # 格式: binary [rss_limit] [other_safe_flags] /testcase
+            cmd_parts = [binary_path] + kept_args
+            if poc_path:
+                cmd_parts.append(poc_path)
+            
+            clean_command = " ".join(cmd_parts)
+
+            return (
+                f"Reproduction Command Details:\n"
+                f"Binary: {binary_path}\n"
+                f"PoC File: {poc_path if poc_path else 'Unknown'}\n"
+                f"Full Command: {clean_command}\n"
+            )
+        return ""
+
     def _replay(self, poc: PoC, sanitizer: Sanitizer, patch: str = "") -> Optional[SanitizerReport]:
         self._build(sanitizer, patch)
 
@@ -214,6 +337,8 @@ class OSSFuzzBuilder(Builder):
                     sanitizers = [sanitizer, Sanitizer.LibFuzzer]
                 case Lang.JVM:
                     sanitizers = [sanitizer, Sanitizer.JavaNativeSanitizer, Sanitizer.LibFuzzer]
+            
+            repro_command = self._extract_repro_command(e.stdout)
 
             for report in [e.stdout, e.stderr]:
                 for sanitizer in sanitizers:
@@ -222,6 +347,7 @@ class OSSFuzzBuilder(Builder):
                             report,
                             sanitizer,
                             source_path=self.source_path,
+                            run_command=repro_command,
                         )
                     ) is not None:
                         return san_report
@@ -326,3 +452,33 @@ class OSSFuzzBuilder(Builder):
 
     def construct_java_language_server(self) -> JavaLanguageServer:
         return JavaLanguageServer(self.source_path)
+
+    def get_develop_debug_paths(self) -> dict:
+        """
+        获取未打补丁状态下的调试路径映射信息。
+        用于 Debugger 工具将 OSS-Fuzz 容器 (Target) 内的路径映射回 Agent 容器 (Develop) 内的真实路径。
+        """
+        sanitizer = self.sanitizers[0]
+        # Debugger always runs on the unpatched (original) code initially
+        empty_patch = ""
+        hash_dir = self.hash_patch(sanitizer, empty_patch)
+
+        # Source Path: Develop 端源码根目录
+        # 对应关系: OSS-Fuzz:/src/[project] <==> Develop:[Workspace]/[Hash]/<原始目录名> (例如 .../source)
+        develop_source_root = self.workspace / hash_dir / self.org_source_path.name
+
+        # Out Path: Develop 端构建产物目录
+        # 对应关系: OSS-Fuzz:/out <==> Develop:[Workspace]/[Hash]/oss-fuzz/build/out/[project]
+        develop_out_root = self.workspace / hash_dir / self.org_fuzz_tooling_path.name / "build" / "out" / self.project
+
+        return {
+            "source_map": (f"/src/{self.project}", str(develop_source_root)),
+            "out_root_map": ("/out", str(develop_out_root)),
+            "develop_source_path_obj": develop_source_root
+        }
+
+    def resolve_poc_path(self, arg_token: str, pocs: List[OSSFuzzPoC]) -> str:
+        if arg_token == "/testcase":
+            if pocs:
+                return str(pocs[0].path)
+        return arg_token

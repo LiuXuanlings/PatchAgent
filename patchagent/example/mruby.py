@@ -49,7 +49,24 @@ if __name__ == "__main__":
             ),
         )
 
-        patchtask.initialize()
+        print("[⏳] Initializing task...")
+        init_result, init_msg = patchtask.initialize()
+        
+        print(f"[ℹ️] Initialize Result: {init_result}")
+        print(f"[ℹ️] Initialize Message: {init_msg}")
+
+        if init_result != "ValidationResult.BugDetected" and str(init_result) != "ValidationResult.BugDetected":
+            # 如果没有检测到 Bug，就不要继续修了，否则肯定报错
+            print("[❌] Failed to reproduce the bug. Aborting repair.")
+            # 可以在这里检查一下 poc 文件的大小
+            import os
+            try:
+                print(f"[🔍] PoC file size: {os.path.getsize(poc_path)} bytes")
+            except Exception as e:
+                print(f"[⚠️] Could not check PoC file: {e}")
+            exit(1)
+
+        print("[🚀] Bug reproduced! Starting repair...")
         print(f"Patch: {patchtask.repair(agent_generator())}")
 
 

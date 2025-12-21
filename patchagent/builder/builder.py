@@ -2,7 +2,7 @@ import shutil
 import tempfile
 from functools import cached_property
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Dict, List, Any
 
 from git import Repo
 import subprocess
@@ -107,3 +107,21 @@ class Builder:
         raise NotImplementedError("replay not implemented")
 
     def function_test(self, patch: str = "") -> None: ...
+
+     # === 新增调试接口 ===
+    def get_develop_debug_paths(self) -> Dict[str, Any]:
+        """
+        获取调试环境的路径映射信息。
+        必须返回包含以下键的字典:
+        - "source_map": (remote_src_path, local_src_path)
+        - "out_root_map": (remote_out_prefix, local_out_prefix)
+        - "develop_source_path_obj": Path对象，指向开发环境源码根目录
+        """
+        raise NotImplementedError(f"{self.__class__.__name__} does not support debugging yet.")
+
+    def resolve_poc_path(self, arg_token: str, pocs: List[PoC]) -> str:
+        """
+        将构建/运行环境中的特殊文件路径（如 /testcase）解析为 Agent 环境中的真实路径。
+        默认实现：不进行转换，直接返回原参数。
+        """
+        return arg_token
